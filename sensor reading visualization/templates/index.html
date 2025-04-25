@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>⚙️ Torque Sensor Dashboard</h1>
+
+        <div class="torque-display">
+            <h2>🔧 Torque Value: <span id="torque-value">Waiting for data...</span> Ncm</h2>
+        </div>
+
+        <div class="graph-container">
+            <div id="graph"></div>
+        </div>
+
+        <div class="controls">
+            <label for="threshold">🚨 Alert Threshold</label>
+            <input type="range" id="threshold" min="10" max="100" step="1" value="50">
+            <span id="threshold-value">50 Ncm</span>
+
+            <button id="export-csv-button">📄 Export CSV</button>
+            <button id="export-pdf-button">📄 Export PDF</button>
+            <button class="theme-toggle" onclick="toggleTheme()">🌙 Toggle Theme</button>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
