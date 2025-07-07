@@ -1,88 +1,81 @@
-/* ✨ Modern Styling ✨ */
+/* static/styles.css */
+/* — Base & Glassmorphism — */
 body {
-    font-family: 'Poppins', sans-serif;
-    background: linear-gradient(135deg, #1E1E1E, #282828);
-    color: white;
-    text-align: center;
-    margin: 0;
-    padding: 0;
+  margin: 0; padding: 0;
+  font-family: 'Poppins', sans-serif;
+  background: linear-gradient(135deg, #1E1E1E, #282828);
+  color: #eee;
 }
-
-/* ⚡ Glassmorphism Container */
 .container {
-    max-width: 900px;
-    margin: auto;
-    padding: 20px;
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    border-radius: 15px;
-    box-shadow: 0px 4px 15px rgba(0, 123, 255, 0.25);
+  max-width: 960px;
+  margin: 40px auto;
+  padding: 20px;
+  background: rgba(255,255,255,0.1);
+  backdrop-filter: blur(12px);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
-
-/* 🚀 Headings */
 h1 {
-    color: #007BFF;
-    font-size: 32px;
-    font-weight: bold;
-    text-shadow: 2px 2px 8px rgba(0, 123, 255, 0.4);
+  text-align: center;
+  color: #4FC3F7;
+  text-shadow: 2px 2px 8px rgba(79,195,247,0.4);
 }
-
-/* 🎭 Dark Mode Styling */
-.dark-mode {
-    background: linear-gradient(135deg, #0D0D0D, #1C1C1C);
-    color: #f1f1f1;
+/* Status & Value Panels */
+.status-panel, .value-panel {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 10px 0; padding: 12px;
+  background: rgba(0, 123, 255, 0.2);
+  border-radius: 10px;
 }
-
-/* 📊 Torque Display */
-.torque-display {
-    font-size: 24px;
-    font-weight: bold;
-    background: rgba(0, 123, 255, 0.2);
-    padding: 15px;
-    border-radius: 10px;
-    box-shadow: 0px 4px 12px rgba(0, 123, 255, 0.3);
-    transition: all 0.3s ease-in-out;
+.status-panel button {
+  padding: 6px 12px;
+  background: #007BFF;
+  border: none; border-radius: 6px;
+  color: white; cursor: pointer;
 }
-
-/* 📈 Graph Container */
-.graph-container {
-    border: 2px solid #007BFF;
-    padding: 15px;
-    background-color: #333;
-    border-radius: 10px;
-    box-shadow: 0px 4px 10px rgba(0, 123, 255, 0.2);
-    margin-top: 20px;
+.value-panel h2 {
+  margin: 0;
 }
-
-/* 🎯 Buttons with Gradient */
-button {
-    background: linear-gradient(135deg, #007BFF, #0056b3);
-    color: white;
-    padding: 12px 15px;
-    border: none;
-    font-size: 16px;
-    border-radius: 8px;
-    cursor: pointer;
-    margin: 10px;
-    transition: all 0.3s ease-in-out;
+/* Graph */
+.graph {
+  height: 400px;
+  margin: 20px 0;
+  border-radius: 10px;
+  overflow: hidden;
 }
-
-button:hover {
-    transform: scale(1.05);
-    background: linear-gradient(135deg, #0056b3, #003f82);
+/* Controls */
+.controls {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 12px; margin-top: 20px;
 }
-
-/* 🌙 Theme Toggle Button */
-.theme-toggle {
-    background: rgba(255, 255, 255, 0.15);
-    backdrop-filter: blur(10px);
-    padding: 10px;
-    font-size: 16px;
-    border-radius: 8px;
-    transition: all 0.3s ease-in-out;
+.controls label {
+  flex: 1 1 200px;
 }
-
-.theme-toggle:hover {
-    background: rgba(255, 255, 255, 0.3);
-    transform: scale(1.1);
+.controls input[type=range] {
+  flex: 2 1 300px;
 }
+.controls button {
+  flex: 1 1 120px;
+  background: linear-gradient(135deg, #007BFF, #0056b3);
+  border: none; border-radius: 8px;
+  padding: 10px; color: white; cursor: pointer;
+  transition: transform .2s;
+}
+.controls button:hover {
+  transform: scale(1.05);
+}
+/* Modal (History) */
+.modal {
+  display: none; position: fixed; top: 0; left: 0;
+  width: 100%; height: 100%; background: rgba(0,0,0,0.6);
+}
+.modal-content {
+  background: #222; margin: 10% auto; padding: 20px;
+  width: 80%; border-radius: 8px; position: relative;
+}
+#close-modal {
+  position: absolute; top: 10px; right: 20px;
+  font-size: 28px; cursor: pointer;
+}
+/* Dark Mode */
+.dark-mode body { background: #000; color: #ccc; }

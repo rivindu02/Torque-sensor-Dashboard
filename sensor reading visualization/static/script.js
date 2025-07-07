@@ -1,44 +1,61 @@
-document.addEventListener("DOMContentLoaded", function () {
-    let thresholdInput = document.getElementById("threshold");
-    let thresholdValue = document.getElementById("threshold-value");
+// static/script.js
+// static/script.js
+document.addEventListener("DOMContentLoaded", () => {
+  const statusEl    = document.getElementById("status");
+  const torqueEl    = document.getElementById("torque");
+  const graphEl     = document.getElementById("graph");
+  const threshInput = document.getElementById("threshold");
+  const threshVal   = document.getElementById("thresh-val");
+  const histModal   = document.getElementById("history-modal");
+  const histGraph   = document.getElementById("history-graph");
 
-    thresholdInput.addEventListener("input", function () {
-        thresholdValue.innerText = thresholdInput.value + " Nm";
-        localStorage.setItem("threshold", thresholdInput.value);
-    });
+  // Persist threshold
+  threshInput.value = localStorage.getItem("threshold")||50;
+  threshVal.innerText = threshInput.value;
+  threshInput.oninput = () => {
+    threshVal.innerText = threshInput.value;
+    localStorage.setItem("threshold", threshInput.value);
+  };
 
-    fetchTorqueData();
-    setInterval(fetchTorqueData, 2000);
-});
+  // Start BLE reader
+  document.getElementById("btn-start").onclick = () => {
+    fetch("/start");
+  };
 
-function fetchTorqueData() {
-    fetch("/torque")
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById("torque-value").innerText = data.torque_value;
-            updateGraph(data.torque_value);
-        });
-}
-
-function updateGraph(torqueValue) {
-    let trace = {
+  // Periodic updates
+  setInterval(() => {
+    fetch("/status").then(r=>r.json()).then(j=>statusEl.innerText = "Status: " + j.status);
+    fetch("/torque").then(r=>r.json()).then(j=>{
+      torqueEl.innerText = j.torque_value ?? "--";
+      torqueEl.style.color = (j.torque_value > threshInput.value) ? "tomato" : "#00CC66";
+      Plotly.react(graphEl, [{
         x: [new Date()],
-        y: [torqueValue],
-        mode: "lines+markers",
-        marker: { color: torqueValue > localStorage.getItem("threshold") ? "red" : "green" }
-    };
+        y: [j.torque_value],
+        mode:"lines+markers",
+        marker:{ color: (j.torque_value>threshInput.value)?"tomato":"#00CC66" }
+      }], { margin:{t:30}, title:"Real-Time Torque" });
+    });
+  }, 2000);
 
-    Plotly.newPlot("graph", [trace], { title: "Real-Time Torque Readings" });
-}
+  // Export buttons
+  document.getElementById("export-csv").onclick = ()=> location.href="/export_csv";
+  document.getElementById("export-pdf").onclick = ()=> location.href="/export_pdf";
 
-document.getElementById("export-csv-button").addEventListener("click", function () {
-    window.location.href = "/export_csv";
-});
+  // History modal
+  document.getElementById("view-history").onclick = ()=>{
+    fetch("/history").then(r=>r.json()).then(data=>{
+      Plotly.newPlot(histGraph, [{
+        x: data.map(d=>new Date(d.t)),
+        y: data.map(d=>d.v),
+        mode:"lines", line:{shape:"hv"}
+      }], { margin:{t:30}, title:"Last 100 Readings" });
+      histModal.style.display = "block";
+    });
+  };
+  document.getElementById("close-modal").onclick = ()=> histModal.style.display="none";
 
-document.getElementById("export-pdf-button").addEventListener("click", function () {
-    window.location.href = "/export_pdf";
-});
-
-function toggleTheme() {
+  // Theme toggle
+  document.getElementById("toggle-theme").onclick = ()=>{
     document.body.classList.toggle("dark-mode");
-}
+  };
+});

@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Torque Sensor Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        #connection-status { padding: 10px; margin-bottom: 10px; border-radius: 5px; }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        #data-status { padding: 10px; margin-bottom: 10px; border-radius: 5px; }
+        .data-active { background-color: #d4edda; color: #155724; }
+        .data-inactive { background-color: #fff3cd; color: #856404; animation: pulse 2s infinite; }
+        button { padding: 10px 15px; margin: 5px; cursor: pointer; }
+        #chart-container { margin-top: 20px; height: 300px; }
+        #torqueValue { font-size: 1.2em; margin: 10px 0; }
+        #loading { display: none; margin: 10px 0; }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Torque Sensor Monitor</h1>
+    
+    <div id="connection-status" class="disconnected">BLE: Disconnected</div>
+    <div id="data-status" class="data-inactive" style="display:none;">Sensor: No Data (Check HX711 connection)</div>
+    <div id="loading">Connecting...</div>
+    
+    <button id="connectBtn">Connect to Sensor</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+    
+    <div id="torqueValue">Torque: -- Nm</div>
+    
+    <div id="chart-container">
+        <canvas id="torqueChart"></canvas>
+    </div>
+
+    <script>
+        // BLE Configuration
+        const TORQUE_SERVICE_UUID = '18424398-7cbc-11e9-8f9e-2a86e4085a59';
+        
+        // Global variables
+        let torqueSensorDevice = null;
+        let torqueCharacteristic = null;
+        let torqueChart = null;
+        let dataPoints = [];
+        const MAX_DATA_POINTS = 100;
+        let keepAliveInterval = null;
+        let isReconnecting = false;
+        let notificationHandler = null;
+        let lastReadingTime = 0;
+        let readingCheckInterval = null;
+        const READING_TIMEOUT = 3000; // 3 seconds without readings = warning
+        let connectionRetryCount = 0;
+        const MAX_RETRIES = 3;
+
+        // Initialize Chart
+        function initChart() {
+            const ctx = document.getElementById('torqueChart').getContext('2d');
+            torqueChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: Array(MAX_DATA_POINTS).fill(''),
+                    datasets: [{
+                        label: 'Torque (Nm)',
+                        data: Array(MAX_DATA_POINTS).fill(null),
+                        borderColor: 'rgb(75, 192, 192)',
+                        tension: 0.1,
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            title: {
+                                display: true,
+                                text: 'Torque (Nm)'
+                            }
+                        },
+                        x: {
+                            display: false
+                        }
+                    },
+                    animation: {
+                        duration: 0
+                    },
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update chart with new data
+        function updateChart(value) {
+            dataPoints.push(value);
+            if (dataPoints.length > MAX_DATA_POINTS) {
+                dataPoints.shift();
+            }
+            torqueChart.data.datasets[0].data = dataPoints;
+            torqueChart.update('none');
+        }
+
+        // Show loading indicator
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        // Update data status
+        function updateDataStatus(active) {
+            const statusElement = document.getElementById('data-status');
+            if (active) {
+                statusElement.textContent = 'Sensor: Receiving Data';
+                statusElement.className = 'data-active';
+            } else {
+                statusElement.style.display = 'block';
+                statusElement.textContent = 'Sensor: No Data (Check HX711 connection)';
+                statusElement.className = 'data-inactive';
+            }
+        }
+
+        // Start monitoring for missing readings
+        function startReadingMonitor() {
+            if (readingCheckInterval) clearInterval(readingCheckInterval);
+            
+            readingCheckInterval = setInterval(() => {
+                if (!torqueSensorDevice?.gatt?.connected) return;
+                
+                const timeSinceLastReading = Date.now() - lastReadingTime;
+                if (timeSinceLastReading > READING_TIMEOUT) {
+                    updateDataStatus(false);
+                }
+            }, 1000);
+        }
+
+        // Enhanced Connection Function
+        async function connectToSensor() {
+            if (isReconnecting) return;
+            
+            showLoading(true);
+            isReconnecting = true;
+            connectionRetryCount++;
+            
+            try {
+                console.log('Requesting Bluetooth Device...');
+                
+                // Request device with error handling
+                torqueSensorDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'Torque Sensor' }],
+                    optionalServices: [TORQUE_SERVICE_UUID]
+                }).catch(error => {
+                    if (error.message.includes('user gesture')) {
+                        throw new Error('Please click the Connect button to grant permissions');
+                    }
+                    throw error;
+                });
+
+                torqueSensorDevice.addEventListener('gattserverdisconnected', onDisconnected);
+                
+                console.log('Connecting to GATT Server...');
+                const server = await torqueSensorDevice.gatt.connect();
+                
+                // Reset retry count on successful connection
+                connectionRetryCount = 0;
+
+                // Request larger MTU for stable connection
+                if (server.requestMtu) {
+                    try {
+                        await server.requestMtu(512);
+                        console.log('MTU size increased');
+                    } catch (mtuError) {
+                        console.warn('MTU request failed:', mtuError);
+                    }
+                }
+
+                console.log('Getting Service...');
+                const service = await server.getPrimaryService(TORQUE_SERVICE_UUID);
+                
+                console.log('Discovering All Characteristics...');
+                const characteristics = await service.getCharacteristics();
+                
+                // Debug: List all characteristics
+                console.log('Available Characteristics:');
+                characteristics.forEach((char, idx) => {
+                    console.log(`#${idx}: UUID=${char.uuid}, Properties=${JSON.stringify(char.properties)}`);
+                });
+
+                // Find the correct characteristic by properties
+                torqueCharacteristic = characteristics.find(c => 
+                    c.properties.notify ||  // Prefer notify
+                    c.properties.read      // Fallback to readable
+                );
+                
+                if (!torqueCharacteristic) {
+                    throw new Error('No suitable characteristic found for torque readings');
+                }
+
+                console.log('Using Characteristic:', torqueCharacteristic.uuid);
+                
+                // Setup notifications or polling
+                if (torqueCharacteristic.properties.notify) {
+                    await setupNotifications();
+                } else {
+                    startPolling();
+                }
+                
+                // Start keep-alive
+                keepAliveInterval = setInterval(() => {
+                    if (!torqueSensorDevice?.gatt?.connected) {
+                        clearInterval(keepAliveInterval);
+                        return;
+                    }
+                    console.log('Connection alive');
+                }, 3000);
+
+                // Start monitoring for missing readings
+                startReadingMonitor();
+                lastReadingTime = Date.now();
+                updateDataStatus(true);
+
+                updateConnectionStatus(true);
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                
+                console.log('Successfully connected');
+            } catch (error) {
+                console.error('Connection failed:', error);
+                
+                if (connectionRetryCount < MAX_RETRIES) {
+                    alert(`Connection failed: ${error.message}\n\nAttempting to reconnect (${connectionRetryCount}/${MAX_RETRIES})`);
+                    setTimeout(connectToSensor, 1000);
+                } else {
+                    alert(`Connection failed: ${error.message}\n\nPlease check:\n1. Sensor is powered on\n2. Bluetooth is enabled\n3. Try again`);
+                    onDisconnected();
+                }
+                return;
+            } finally {
+                showLoading(false);
+                isReconnecting = false;
+            }
+        }
+
+        // Setup notifications
+        async function setupNotifications() {
+            try {
+                await torqueCharacteristic.startNotifications();
+                
+                notificationHandler = (event) => {
+                    try {
+                        const value = event.target.value;
+                        if (!value || value.byteLength < 2) {
+                            console.warn('Invalid notification data');
+                            return;
+                        }
+                        
+                        // Read as little-endian 16-bit unsigned int
+                        const rawValue = value.getUint16(0, true); 
+                        const torque = rawValue / 1000.0;
+                        
+                        document.getElementById('torqueValue').textContent = `Torque: ${torque.toFixed(3)} Nm`;
+                        updateChart(torque);
+                        
+                        lastReadingTime = Date.now();
+                        updateDataStatus(true);
+                        
+                    } catch (error) {
+                        console.error('Error processing notification:', error);
+                    }
+                };
+                
+                torqueCharacteristic.addEventListener('characteristicvaluechanged', notificationHandler);
+                
+            } catch (error) {
+                console.error('Notification setup failed:', error);
+                throw error;
+            }
+        }
+
+        // Fallback polling function
+        function startPolling() {
+            const poll = async () => {
+                if (!torqueSensorDevice?.gatt?.connected) return;
+                
+                try {
+                    const value = await torqueCharacteristic.readValue();
+                    handleTorqueNotification({ target: { value } });
+                    setTimeout(poll, 100);
+                } catch (error) {
+                    console.error('Polling error:', error);
+                    setTimeout(poll, 1000);
+                }
+            };
+            poll();
+        }
+
+        // Handle torque data
+        function handleTorqueNotification(event) {
+            try {
+                const value = event.target.value;
+                if (!value || value.byteLength < 2) {
+                    console.warn('Invalid data length');
+                    return;
+                }
+                
+                const rawValue = value.getUint16(0, true); 
+                const torque = rawValue / 1000.0;
+                
+                document.getElementById('torqueValue').textContent = `Torque: ${torque.toFixed(3)} Nm`;
+                updateChart(torque);
+                
+                lastReadingTime = Date.now();
+                updateDataStatus(true);
+                
+            } catch (error) {
+                console.error('Data processing error:', error);
+            }
+        }
+
+        // Update connection status UI
+        function updateConnectionStatus(connected) {
+            const statusElement = document.getElementById('connection-status');
+            if (connected) {
+                statusElement.textContent = 'BLE: Connected';
+                statusElement.className = 'connected';
+            } else {
+                statusElement.textContent = 'BLE: Disconnected';
+                statusElement.className = 'disconnected';
+            }
+        }
+
+        // Disconnection handler
+        function onDisconnected() {
+            console.log('Disconnected callback triggered');
+            
+            // Clean up
+            if (keepAliveInterval) {
+                clearInterval(keepAliveInterval);
+                keepAliveInterval = null;
+            }
+            
+            if (readingCheckInterval) {
+                clearInterval(readingCheckInterval);
+                readingCheckInterval = null;
+            }
+            
+            if (torqueCharacteristic && notificationHandler) {
+                try {
+                    torqueCharacteristic.removeEventListener('characteristicvaluechanged', notificationHandler);
+                } catch (e) {
+                    console.warn('Error removing listener:', e);
+                }
+                notificationHandler = null;
+                torqueCharacteristic = null;
+            }
+            
+            document.getElementById('data-status').style.display = 'none';
+            updateConnectionStatus(false);
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            
+            connectionRetryCount = 0;
+        }
+
+        // Manual disconnect
+        function disconnectFromSensor() {
+            if (!torqueSensorDevice) return;
+            
+            if (torqueSensorDevice.gatt.connected) {
+                torqueSensorDevice.gatt.disconnect();
+            }
+            onDisconnected();
+        }
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', function() {
+            initChart();
+            
+            document.getElementById('connectBtn').addEventListener('click', function(event) {
+                if (event.isTrusted) {
+                    connectToSensor();
+                }
+            });
+            
+            document.getElementById('disconnectBtn').addEventListener('click', disconnectFromSensor);
+            
+            if (!navigator.bluetooth) {
+                alert('Web Bluetooth API is not available in this browser! Please use Chrome or Edge.');
+                document.getElementById('connectBtn').disabled = true;
+            }
+        });
+    </script>
+</body>
+</html>
