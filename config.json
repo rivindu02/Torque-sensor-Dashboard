@@ -1,0 +1,6 @@
+{
+    "sensorName": "Torque Sensor",
+    "sensorAddress": "48:23:35:F4:00:0B",
+    "HX711_UUID" : "15005991-b131-3396-014c-664c9867b917"
+
+}

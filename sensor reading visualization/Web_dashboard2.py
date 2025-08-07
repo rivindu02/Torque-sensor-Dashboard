@@ -1,4 +1,3 @@
-# Web_dashboard.py
 from flask import Flask, render_template, jsonify, send_file
 import sqlite3, threading, asyncio, os, platform
 import json
@@ -15,21 +14,18 @@ else:
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
-
-
-
 # — Settings —
 # Load config.json
 with open("config.json", "r") as f:
     CONFIG = json.load(f)
 
-SENSOR_NAME = CONFIG.get("sensorName", "DLG-BRBN")
+SENSOR_NAME = CONFIG.get("sensorName", "Torque Sensor")
 SENSOR_MAC = CONFIG.get("sensorAddress", "48:23:35:F4:00:0B")
-HX711_UUID = CONFIG.get("hx711UUID", "15005991-b131-3396-014c-664c9867b917")
+TORQUE_UUID = CONFIG.get("torqueUUID", "3473E583-0516-642E-5C1D-06A0FAAD9366")  # Updated UUID
+MANUFACTURER_NAME = "Renesas"  # For additional verification
+MODEL_NUMBER = "DA14531"  # For additional verification
 
-# SENSOR_MAC   = "48:23:35:F4:00:0B"
-# HX711_UUID   = "15005991-b131-3396-014c-664c9867b917"
-DB_FILE      = "torque_data.db"
+DB_FILE = "torque_data.db"
 
 # Global status
 status = "Disconnected"
@@ -61,8 +57,11 @@ async def ble_loop():
         device_holder = {}
 
         def detection_callback(device: BLEDevice, adv: AdvertisementData):
-            if device.address.lower() == SENSOR_MAC.lower():
+            # Check MAC address and manufacturer data if available
+            if (device.address.lower() == SENSOR_MAC.lower() or 
+                (adv.manufacturer_data and MANUFACTURER_NAME in str(adv.manufacturer_data))):
                 device_holder['dev'] = device
+                device_holder['adv'] = adv
                 found.set()
 
         scanner = BleakScanner(detection_callback)
@@ -78,39 +77,50 @@ async def ble_loop():
             await scanner.stop()
 
         dev = device_holder['dev']
-        status = f"Found {dev.address}"
+        adv = device_holder.get('adv', None)
+        status = f"Found {dev.name or dev.address}"
 
         # ── 2) Connect using full BLEDevice ──
         try:
             if platform.system() == "Linux":
-                # tell BlueZ to use random address if needed
                 client = BLEClient(dev.address, address_type=AddressType.random)
             else:
                 client = BLEClient(dev)
 
-            async with client as conn:
-                # __aenter__ already calls connect()
-                if not conn.is_connected:
+            async with client:
+                if not client.is_connected:
                     status = "Connection failed"
                     await asyncio.sleep(5.0)
                     continue
 
                 status = "Connected ✓"
+                
+                # Verify device information
+                try:
+                    model_number = await client.read_gatt_char("00002a24-0000-1000-8000-00805f9b34fb")
+                    if MODEL_NUMBER not in model_number.decode():
+                        status = "Wrong device model"
+                        continue
+                except Exception as e:
+                    status = f"Device verification failed: {str(e)}"
+                    continue
+
                 # ── 3) Read loop ──
-                while conn.is_connected:
+                while client.is_connected:
                     try:
-                        raw = await conn.read_gatt_char(HX711_UUID)
+                        raw = await client.read_gatt_char(TORQUE_UUID)
                         val = int.from_bytes(raw, byteorder="little", signed=False)
                         save_val(val)
                         status = f"Streaming: {val} N·cm"
-                    except Exception:
-                        status = "Read error"
+                    except Exception as e:
+                        status = f"Read error: {str(e)}"
+                        await asyncio.sleep(1.0)
+                        break  # Exit read loop on error
                     await asyncio.sleep(1.0)
 
-        except Exception:
-            status = "BLE Error"
+        except Exception as e:
+            status = f"BLE Error: {str(e)}"
             await asyncio.sleep(5.0)
-
 
 @app.route("/")
 def dashboard():
@@ -174,6 +184,7 @@ def start_ble():
         ble_thread = threading.Thread(target=lambda: asyncio.run(ble_loop()), daemon=True)
         ble_thread.start()
     return jsonify({"status":"BLE reader started"})
+
 
 if __name__ == "__main__":
     init_db()
