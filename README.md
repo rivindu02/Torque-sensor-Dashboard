@@ -2,7 +2,7 @@
 
 This project provides a user interface for displaying real-time torque readings, offering users an intuitive and interactive way to monitor and analyze torque data.
 
-![Torque UI Screenshot](dashboard.png) 
+![Torque UI Screenshot](dashboard.jpg) 
 
 ## Features
 
