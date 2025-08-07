@@ -34,8 +34,10 @@ MODEL_NUMBER = CONFIG.get("modelNumber", "DA14531")
 
 DB_FILE = "torque_data.db"
 
-# Global status
+# Global status and thread control
 status = "Disconnected"
+ble_thread = None
+stop_ble = False
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -56,8 +58,8 @@ def save_val(val):
     conn.close()
 
 async def ble_loop():
-    global status
-    while True:
+    global status, stop_ble
+    while not stop_ble:
         # ── 1) Scan with callback ──
         status = "Scanning…"
         found = asyncio.Event()
@@ -83,6 +85,9 @@ async def ble_loop():
             continue
         finally:
             await scanner.stop()
+
+        if stop_ble:
+            break
 
         dev = device_holder['dev']
         adv = device_holder.get('adv', None)
@@ -118,7 +123,7 @@ async def ble_loop():
                     continue
 
                 # ── 3) Read loop ──
-                while client.is_connected:
+                while client.is_connected and not stop_ble:
                     try:
                         raw = await client.read_gatt_char(TORQUE_UUID)
                         val = int.from_bytes(raw, byteorder="little", signed=False)
@@ -133,6 +138,8 @@ async def ble_loop():
         except Exception as e:
             status = f"BLE Error: {str(e)}"
             await asyncio.sleep(5.0)
+    
+    status = "Disconnected"
 
 @app.route("/")
 def dashboard():
@@ -153,48 +160,64 @@ def get_torque():
         return jsonify({"timestamp":None, "torque_value":None})
     return jsonify({"timestamp": row[0], "torque_value": row[1]})
 
-@app.route("/history")
-def get_history():
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute(
-        "SELECT timestamp, torque_value FROM torque_data ORDER BY id DESC LIMIT 100"
-    ).fetchall()
-    conn.close()
-    data = [{"t":r[0], "v":r[1]} for r in reversed(rows)]
-    return jsonify(data)
-
 @app.route("/export_csv")
 def export_csv():
     import pandas as pd
-    path = "torque_data.csv"
-    df = pd.read_sql("SELECT * FROM torque_data", sqlite3.connect(DB_FILE))
-    df.to_csv(path, index=False)
-    return send_file(path, as_attachment=True)
+    import os
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "torque_data.csv")
+        df = pd.read_sql("SELECT * FROM torque_data", sqlite3.connect(DB_FILE))
+        if df.empty:
+            return jsonify({"error": "No data available for CSV export"}), 400
+        df.to_csv(path, index=False)
+        return send_file(path, as_attachment=True, download_name="torque_data.csv")
+    except Exception as e:
+        return jsonify({"error": f"CSV export failed: {str(e)}"}), 500
 
 @app.route("/export_pdf")
 def export_pdf():
-    from reportlab.pdfgen import canvas
-    path = "torque_data.pdf"
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute("SELECT timestamp, torque_value FROM torque_data").fetchall()
-    conn.close()
-    c = canvas.Canvas(path)
-    c.drawString(100, 800, "Torque Sensor Report")
-    y = 780
-    for ts, v in rows:
-        c.drawString(100, y, f"{ts} – {v} N·cm")
-        y -= 15
-        if y < 50:
-            c.showPage()
-            y = 800
-    c.save()
-    return send_file(path, as_attachment=True)
+    import tempfile
+    import os
+    try:
+        from reportlab.pdfgen import canvas
+        
+        conn = sqlite3.connect(DB_FILE)
+        rows = conn.execute("SELECT timestamp, torque_value FROM torque_data").fetchall()
+        conn.close()
+        
+        if not rows:
+            return jsonify({"error": "No data available for PDF export"}), 400
+        
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            temp_path = tmp_file.name
+        
+        c = canvas.Canvas(temp_path)
+        c.drawString(100, 800, "Torque Sensor Report")
+        y = 780
+        for ts, v in rows:
+            c.drawString(100, y, f"{ts} – {v} N·cm")
+            y -= 15
+            if y < 50:
+                c.showPage()
+                y = 800
+        c.save()
+        
+        response = send_file(temp_path, as_attachment=True, download_name="torque_data.pdf")
+        response.call_on_close(lambda: os.unlink(temp_path))
+        return response
+        
+    except ImportError:
+        return jsonify({"error": "ReportLab library not installed. Install with: pip install reportlab"}), 500
+    except Exception as e:
+        return jsonify({"error": f"PDF export failed: {str(e)}"}), 500
 
 @app.route("/start")
 def start_ble():
-    global ble_thread
+    global ble_thread, stop_ble
     try:
-        if 'ble_thread' not in globals() or not ble_thread.is_alive():
+        if ble_thread is None or not ble_thread.is_alive():
+            stop_ble = False
             ble_thread = threading.Thread(target=lambda: asyncio.run(ble_loop()), daemon=True)
             ble_thread.start()
             return jsonify({"status": "BLE reader started"})
@@ -203,9 +226,13 @@ def start_ble():
     except Exception as e:
         return jsonify({"status": f"Error starting BLE: {str(e)}"})
 
+@app.route("/stop")
+def stop_ble_connection():
+    global stop_ble
+    stop_ble = True
+    return jsonify({"status": "BLE reader stopped"})
+
 if __name__ == "__main__":
     init_db()
-    # Initialize ble_thread as a global variable
-    ble_thread = threading.Thread(target=lambda: asyncio.run(ble_loop()), daemon=True)
-    ble_thread.start()
+    # Don't start BLE automatically - wait for start button
     app.run(debug=True, host='0.0.0.0', port=5000)

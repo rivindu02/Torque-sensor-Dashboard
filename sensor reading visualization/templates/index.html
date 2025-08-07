@@ -13,7 +13,8 @@
 
     <div class="status-panel">
       <span id="status">Status: Disconnected</span>
-      <button id="btn-start">🚀 Start Sensor</button>
+      <button id="btn-start">🚀 Start Reading</button>
+      <button id="btn-stop">🛑 Stop reading</button>
     </div>
 
     <div class="value-panel">
@@ -26,19 +27,9 @@
       <label>🚨 Threshold: <span id="thresh-val">50</span> N·cm</label>
       <input type="range" id="threshold" min="10" max="200" value="50">
 
-      <button id="export-csv">📄 CSV</button>
-      <button id="export-pdf">📄 PDF</button>
-      <button id="view-history">📊 History</button>
+      <button id="export-csv">📄 Export CSV</button>
+      <button id="export-pdf">📄 Export PDF</button>
       <button id="toggle-theme">🌙 Toggle Theme</button>
-    </div>
-  </div>
-
-  <!-- History modal -->
-  <div id="history-modal" class="modal">
-    <div class="modal-content">
-      <span id="close-modal">&times;</span>
-      <h3>History (last 100)</h3>
-      <div id="history-graph"></div>
     </div>
   </div>
 

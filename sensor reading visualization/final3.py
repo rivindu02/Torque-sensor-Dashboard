@@ -8,7 +8,7 @@ from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
-# On Linux, force the random‐address client
+# On Linux, force the random-address client
 if platform.system() == "Linux":
     from bleak.backends.bluezdbus import BlueZClient as BLEClient, AddressType
 else:
@@ -31,11 +31,15 @@ SERVICE_UUID = CONFIG.get("serviceUUID", "18424398-7cbc-11e9-8f9e-2a86e4085a59")
 TORQUE_UUID = CONFIG.get("characteristicUUID", "15005991-b131-3396-014c-664c9867b917")
 MANUFACTURER_NAME = CONFIG.get("manufacturerName", "Renesas")
 MODEL_NUMBER = CONFIG.get("modelNumber", "DA14531")
+OFFSET = CONFIG.get("offset", 880804)  # Approx raw value for 2.1 mV (zero torque, 10.5% of 8,388,607)
+SCALE = CONFIG.get("scale", 1.33e-7)  # Placeholder: N·cm per count, assumes ±1 N·cm max torque
 
 DB_FILE = "torque_data.db"
 
-# Global status
+# Global status and thread control
 status = "Disconnected"
+ble_thread = None
+stop_ble = False
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -43,28 +47,28 @@ def init_db():
         CREATE TABLE IF NOT EXISTS torque_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            torque_value INTEGER
+            torque_value REAL
         )
     """)
     conn.commit()
     conn.close()
 
 def save_val(val):
+    print(f"Saving torque value: {val:.2f} N·cm")
     conn = sqlite3.connect(DB_FILE)
     conn.execute("INSERT INTO torque_data (torque_value) VALUES (?)", (val,))
     conn.commit()
     conn.close()
 
 async def ble_loop():
-    global status
-    while True:
+    global status, stop_ble
+    while not stop_ble:
         # ── 1) Scan with callback ──
         status = "Scanning…"
         found = asyncio.Event()
         device_holder = {}
 
         def detection_callback(device: BLEDevice, adv: AdvertisementData):
-            # Check for the specific service UUID in advertisement data
             if (adv.service_uuids and SERVICE_UUID.lower() in [uuid.lower() for uuid in adv.service_uuids]) or \
                (device.name and SENSOR_NAME.lower() in device.name.lower()) or \
                (adv.manufacturer_data and MANUFACTURER_NAME in str(adv.manufacturer_data)):
@@ -83,6 +87,9 @@ async def ble_loop():
             continue
         finally:
             await scanner.stop()
+
+        if stop_ble:
+            break
 
         dev = device_holder['dev']
         adv = device_holder.get('adv', None)
@@ -117,22 +124,59 @@ async def ble_loop():
                     status = f"Service verification failed: {str(e)}"
                     continue
 
-                # ── 3) Read loop ──
-                while client.is_connected:
+                # ── 3) Notification loop ──
+                def notification_handler(sender, data):
+                    global status
                     try:
-                        raw = await client.read_gatt_char(TORQUE_UUID)
-                        val = int.from_bytes(raw, byteorder="little", signed=False)
-                        save_val(val)
-                        status = f"Streaming: {val} N·cm"
+                        # Log raw data for debugging
+                        print(f"Notification raw data (hex): {data.hex()}")
+                        print(f"Notification data length: {len(data)} bytes")
+
+                        # Expect 4 bytes but use first 3 bytes for 24-bit signed integer
+                        if len(data) < 3:
+                            status = f"Unexpected notification data length: {len(data)} bytes (expected at least 3)"
+                            print(status)
+                            return
+
+                        # Extract first 3 bytes for 24-bit signed integer
+                        raw_val = int.from_bytes(data[:3], byteorder="little", signed=True)
+                        print(f"Raw value (integer): {raw_val}")
+
+                        # Log OFFSET and SCALE
+                        print(f"OFFSET: {OFFSET}, SCALE: {SCALE}")
+
+                        # Calculate torque
+                        torque = (raw_val - OFFSET) * SCALE
+                        print(f"Calculated torque: {torque:.2f} N·cm")
+
+                        # Save to database
+                        save_val(torque)
+                        status = f"Streaming: {torque:.2f} N·cm"
                     except Exception as e:
-                        status = f"Read error: {str(e)}"
+                        status = f"Notification error: {str(e)}"
+                        print(f"Notification error details: {str(e)}")
+
+                try:
+                    # Start notifications
+                    await client.start_notify(TORQUE_UUID, notification_handler)
+                    print(f"Subscribed to notifications for UUID: {TORQUE_UUID}")
+                    # Keep connection alive while receiving notifications
+                    while client.is_connected and not stop_ble:
                         await asyncio.sleep(1.0)
-                        break  # Exit read loop on error
-                    await asyncio.sleep(1.0)
+                    # Stop notifications when loop exits
+                    await client.stop_notify(TORQUE_UUID)
+                except Exception as e:
+                    status = f"Notification setup error: {str(e)}"
+                    print(f"Notification setup error details: {str(e)}")
+                    await asyncio.sleep(5.0)
+                    continue
 
         except Exception as e:
             status = f"BLE Error: {str(e)}"
+            print(f"BLE Error details: {str(e)}")
             await asyncio.sleep(5.0)
+    
+    status = "Disconnected"
 
 @app.route("/")
 def dashboard():
@@ -150,51 +194,66 @@ def get_torque():
     ).fetchone()
     conn.close()
     if not row:
-        return jsonify({"timestamp":None, "torque_value":None})
+        return jsonify({"timestamp": None, "torque_value": None})
     return jsonify({"timestamp": row[0], "torque_value": row[1]})
-
-@app.route("/history")
-def get_history():
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute(
-        "SELECT timestamp, torque_value FROM torque_data ORDER BY id DESC LIMIT 100"
-    ).fetchall()
-    conn.close()
-    data = [{"t":r[0], "v":r[1]} for r in reversed(rows)]
-    return jsonify(data)
 
 @app.route("/export_csv")
 def export_csv():
     import pandas as pd
-    path = "torque_data.csv"
-    df = pd.read_sql("SELECT * FROM torque_data", sqlite3.connect(DB_FILE))
-    df.to_csv(path, index=False)
-    return send_file(path, as_attachment=True)
+    import os
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "torque_data.csv")
+        df = pd.read_sql("SELECT * FROM torque_data", sqlite3.connect(DB_FILE))
+        if df.empty:
+            return jsonify({"error": "No data available for CSV export"}), 400
+        df.to_csv(path, index=False)
+        return send_file(path, as_attachment=True, download_name="torque_data.csv")
+    except Exception as e:
+        return jsonify({"error": f"CSV export failed: {str(e)}"}), 500
 
 @app.route("/export_pdf")
 def export_pdf():
-    from reportlab.pdfgen import canvas
-    path = "torque_data.pdf"
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute("SELECT timestamp, torque_value FROM torque_data").fetchall()
-    conn.close()
-    c = canvas.Canvas(path)
-    c.drawString(100, 800, "Torque Sensor Report")
-    y = 780
-    for ts, v in rows:
-        c.drawString(100, y, f"{ts} – {v} N·cm")
-        y -= 15
-        if y < 50:
-            c.showPage()
-            y = 800
-    c.save()
-    return send_file(path, as_attachment=True)
+    import tempfile
+    import os
+    try:
+        from reportlab.pdfgen import canvas
+        
+        conn = sqlite3.connect(DB_FILE)
+        rows = conn.execute("SELECT timestamp, torque_value FROM torque_data").fetchall()
+        conn.close()
+        
+        if not rows:
+            return jsonify({"error": "No data available for PDF export"}), 400
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            temp_path = tmp_file.name
+        
+        c = canvas.Canvas(temp_path)
+        c.drawString(100, 800, "Torque Sensor Report")
+        y = 780
+        for ts, v in rows:
+            c.drawString(100, y, f"{ts} – {v:.2f} N·cm")
+            y -= 15
+            if y < 50:
+                c.showPage()
+                y = 800
+        c.save()
+        
+        response = send_file(temp_path, as_attachment=True, download_name="torque_data.pdf")
+        response.call_on_close(lambda: os.unlink(temp_path))
+        return response
+        
+    except ImportError:
+        return jsonify({"error": "ReportLab library not installed. Install with: pip install reportlab"}), 500
+    except Exception as e:
+        return jsonify({"error": f"PDF export failed: {str(e)}"}), 500
 
 @app.route("/start")
 def start_ble():
-    global ble_thread
+    global ble_thread, stop_ble
     try:
-        if 'ble_thread' not in globals() or not ble_thread.is_alive():
+        if ble_thread is None or not ble_thread.is_alive():
+            stop_ble = False
             ble_thread = threading.Thread(target=lambda: asyncio.run(ble_loop()), daemon=True)
             ble_thread.start()
             return jsonify({"status": "BLE reader started"})
@@ -203,9 +262,12 @@ def start_ble():
     except Exception as e:
         return jsonify({"status": f"Error starting BLE: {str(e)}"})
 
+@app.route("/stop")
+def stop_ble_connection():
+    global stop_ble
+    stop_ble = True
+    return jsonify({"status": "BLE reader stopped"})
+
 if __name__ == "__main__":
     init_db()
-    # Initialize ble_thread as a global variable
-    ble_thread = threading.Thread(target=lambda: asyncio.run(ble_loop()), daemon=True)
-    ble_thread.start()
     app.run(debug=True, host='0.0.0.0', port=5000)

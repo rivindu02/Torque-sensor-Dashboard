@@ -1,13 +1,10 @@
 // static/script.js
-// static/script.js
 document.addEventListener("DOMContentLoaded", () => {
   const statusEl    = document.getElementById("status");
   const torqueEl    = document.getElementById("torque");
   const graphEl     = document.getElementById("graph");
   const threshInput = document.getElementById("threshold");
   const threshVal   = document.getElementById("thresh-val");
-  const histModal   = document.getElementById("history-modal");
-  const histGraph   = document.getElementById("history-graph");
 
   // Persist threshold
   threshInput.value = localStorage.getItem("threshold")||50;
@@ -19,43 +16,88 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Start BLE reader
   document.getElementById("btn-start").onclick = () => {
-    fetch("/start");
+    fetch("/start")
+      .then(r => r.json())
+      .then(data => {
+        console.log("Start response:", data);
+        statusEl.innerText = "Status: " + data.status;
+      })
+      .catch(err => console.error("Start error:", err));
   };
+
+  // Stop BLE reader
+  const stopBtn = document.getElementById("btn-stop");
+  if (stopBtn) {
+    stopBtn.onclick = () => {
+      fetch("/stop")
+        .then(r => r.json())
+        .then(data => {
+          console.log("Stop response:", data);
+          statusEl.innerText = "Status: " + data.status;
+        })
+        .catch(err => console.error("Stop error:", err));
+    };
+  }
 
   // Periodic updates
   setInterval(() => {
-    fetch("/status").then(r=>r.json()).then(j=>statusEl.innerText = "Status: " + j.status);
-    fetch("/torque").then(r=>r.json()).then(j=>{
-      torqueEl.innerText = j.torque_value ?? "--";
-      torqueEl.style.color = (j.torque_value > threshInput.value) ? "tomato" : "#00CC66";
-      Plotly.react(graphEl, [{
-        x: [new Date()],
-        y: [j.torque_value],
-        mode:"lines+markers",
-        marker:{ color: (j.torque_value>threshInput.value)?"tomato":"#00CC66" }
-      }], { margin:{t:30}, title:"Real-Time Torque" });
-    });
+    fetch("/status")
+      .then(r => r.json())
+      .then(j => statusEl.innerText = "Status: " + j.status)
+      .catch(err => console.error("Status fetch error:", err));
+    
+    fetch("/torque")
+      .then(r => r.json())
+      .then(j => {
+        torqueEl.innerText = j.torque_value ?? "--";
+        torqueEl.style.color = (j.torque_value > threshInput.value) ? "tomato" : "#00CC66";
+        
+        // Update real-time graph if Plotly is available
+        if (typeof Plotly !== 'undefined' && graphEl) {
+          Plotly.react(graphEl, [{
+            x: [new Date()],
+            y: [j.torque_value],
+            mode:"lines+markers",
+            marker:{ color: (j.torque_value > threshInput.value) ? "tomato" : "#00CC66" }
+          }], { margin:{t:30}, title:"Real-Time Torque" });
+        }
+      })
+      .catch(err => console.error("Torque fetch error:", err));
   }, 2000);
 
   // Export buttons
-  document.getElementById("export-csv").onclick = ()=> location.href="/export_csv";
-  document.getElementById("export-pdf").onclick = ()=> location.href="/export_pdf";
+  const csvBtn = document.getElementById("export-csv");
+  if (csvBtn) {
+    csvBtn.onclick = () => {
+      console.log("CSV export clicked");
+      window.location.href = "/export_csv";
+    };
+  }
 
-  // History modal
-  document.getElementById("view-history").onclick = ()=>{
-    fetch("/history").then(r=>r.json()).then(data=>{
-      Plotly.newPlot(histGraph, [{
-        x: data.map(d=>new Date(d.t)),
-        y: data.map(d=>d.v),
-        mode:"lines", line:{shape:"hv"}
-      }], { margin:{t:30}, title:"Last 100 Readings" });
-      histModal.style.display = "block";
-    });
-  };
-  document.getElementById("close-modal").onclick = ()=> histModal.style.display="none";
+  const pdfBtn = document.getElementById("export-pdf");
+  if (pdfBtn) {
+    pdfBtn.onclick = () => {
+      console.log("PDF export clicked");
+      window.location.href = "/export_pdf";
+    };
+  }
 
   // Theme toggle
-  document.getElementById("toggle-theme").onclick = ()=>{
-    document.body.classList.toggle("dark-mode");
-  };
+  const themeBtn = document.getElementById("toggle-theme");
+  if (themeBtn) {
+    themeBtn.onclick = () => {
+      console.log("Theme toggle clicked");
+      document.body.classList.toggle("dark-mode");
+      
+      // Save theme preference
+      const isDark = document.body.classList.contains("dark-mode");
+      localStorage.setItem("theme", isDark ? "dark" : "light");
+    };
+  }
+
+  // Load saved theme
+  const savedTheme = localStorage.getItem("theme");
+  if (savedTheme === "dark") {
+    document.body.classList.add("dark-mode");
+  }
 });

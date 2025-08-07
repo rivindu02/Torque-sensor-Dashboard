@@ -12,6 +12,7 @@ import json
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QLabel,
@@ -21,23 +22,28 @@ from PyQt6.QtCore import QTimer, Qt
 from reportlab.pdfgen import canvas
 
 # — User settings —
-SENSOR_MAC        = "48:23:35:34:05:C6"
-DB_FILE           = "torque_data.db"
+DB_FILE = "torque_data.db"
 THRESHOLD_DEFAULT = 100  # N·cm
 
-# — The actual HX711 characteristic UUID (2-byte read) —
 # Load config.json
-with open("config.json", "r") as f:
-    CONFIG = json.load(f)
+try:
+    with open("config.json", "r") as f:
+        CONFIG = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    print("Warning: config.json not found or invalid, using default values")
+    CONFIG = {}
 
-SENSOR_NAME = CONFIG.get("sensorName", "TorqueSensor")
-SENSOR_MAC = CONFIG.get("sensorAddress", "00:00:00:00:00:00")
-HX711_UUID = CONFIG.get("hx711UUID", "00000000-0000-0000-0000-000000000000")
+SENSOR_NAME = CONFIG.get("sensorName", "Torque Sensor")
+SERVICE_UUID = CONFIG.get("serviceUUID", "18424398-7cbc-11e9-8f9e-2a86e4085a59")
+TORQUE_UUID = CONFIG.get("characteristicUUID", "15005991-b131-3396-014c-664c9867b917")
+MANUFACTURER_NAME = CONFIG.get("manufacturerName", "Renesas")
+
 class TorqueDashboard(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Torque Sensor Dashboard")
         self.setGeometry(200, 200, 900, 600)
+        self.connected_device = None
 
         # --- Status & Torque Labels (side by side) ---
         self.status_label = QLabel("Status: Disconnected", self)
@@ -109,36 +115,69 @@ class TorqueDashboard(QMainWindow):
         return lambda: threading.Thread(target=wrapper, daemon=True).start()
 
     async def scan_ble_devices(self):
-        """Quick scan to list BLE devices in console."""
+        """Scan for devices with the required service UUID."""
         self.status_label.setText("Status: Scanning…")
-        devices = await BleakScanner.discover(timeout=5.0)
-        for d in devices:
-            print(f"{d.name or '—':20s} | {d.address} | {d.metadata.get('uuids')}")
-        self.status_label.setText("Status: Scan complete")
+        
+        found_devices = []
+        
+        def detection_callback(device: BLEDevice, adv: AdvertisementData):
+            # Check for the specific service UUID in advertisement data
+            if (adv.service_uuids and SERVICE_UUID.lower() in [uuid.lower() for uuid in adv.service_uuids]) or \
+               (device.name and SENSOR_NAME.lower() in device.name.lower()) or \
+               (adv.manufacturer_data and MANUFACTURER_NAME in str(adv.manufacturer_data)):
+                found_devices.append(device)
+                print(f"Found torque sensor: {device.name or device.address}")
+
+        scanner = BleakScanner(detection_callback)
+        await scanner.start()
+        await asyncio.sleep(5.0)  # Scan for 5 seconds
+        await scanner.stop()
+        
+        if found_devices:
+            self.connected_device = found_devices[0]  # Use first found device
+            self.status_label.setText(f"Status: Found {self.connected_device.name or self.connected_device.address}")
+        else:
+            self.status_label.setText("Status: No torque sensors found")
 
     async def connect_to_sensor(self):
-        """Directly connect on button click, then stream HX711 data."""
+        """Connect to the found sensor and stream data."""
+        if not self.connected_device:
+            self.status_label.setText("Status: No device found. Scan first!")
+            return
+            
         self.status_label.setText("Status: Connecting…")
         client = None
         try:
-            client = BleakClient(SENSOR_MAC)
+            client = BleakClient(self.connected_device)
             await client.connect(timeout=10.0)
             if not client.is_connected:
                 self.status_label.setText("Status: Connection failed")
                 return
 
+            # Verify device has the required service
+            services = await client.get_services()
+            service_found = False
+            for service in services:
+                if service.uuid.lower() == SERVICE_UUID.lower():
+                    service_found = True
+                    break
+            
+            if not service_found:
+                self.status_label.setText("Status: Required service not found")
+                return
+
             self.status_label.setText("Status: Connected ✓")
             while client.is_connected:
                 try:
-                    raw = await client.read_gatt_char(HX711_UUID)
+                    raw = await client.read_gatt_char(TORQUE_UUID)
                     val = int.from_bytes(raw, byteorder="little", signed=False)
-                except Exception:
-                    self.status_label.setText("Status: Read error")
+                    self.torque_label.setText(f"Torque: {val} N·cm")
+                    self._save(val)
+                except Exception as e:
+                    self.status_label.setText(f"Status: Read error: {str(e)}")
                     await asyncio.sleep(1.0)
                     continue
 
-                self.torque_label.setText(f"Torque: {val} N·cm")
-                self._save(val)
                 await asyncio.sleep(1.0)
 
         except Exception as e:
@@ -146,6 +185,7 @@ class TorqueDashboard(QMainWindow):
         finally:
             if client and client.is_connected:
                 await client.disconnect()
+                self.status_label.setText("Status: Disconnected")
 
     def update_graph(self):
         """Refresh the plot based on the last 50 records."""
@@ -239,7 +279,7 @@ class TorqueDashboard(QMainWindow):
 
 
 if __name__ == "__main__":
-    app    = QApplication(sys.argv)
+    app = QApplication(sys.argv)
     window = TorqueDashboard()
     window.show()
     sys.exit(app.exec())
